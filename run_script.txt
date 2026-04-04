@@ -1,0 +1,2 @@
+cd /Users/pitaakphong/Documents/Personal/7_qEEG_Claude
+.venv311/bin/python -m neuroep.main
