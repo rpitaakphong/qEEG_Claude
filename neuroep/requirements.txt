@@ -9,3 +9,6 @@ pylsl>=1.16.0
 matplotlib>=3.8.0
 pyserial>=3.5
 reportlab>=4.0.0
+
+# Optional dependencies for specific hardware support - work well with python 3.11.6
+# Create venvironment with: python -m venv .venv 3.11.6 first 

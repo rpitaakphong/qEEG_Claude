@@ -10,25 +10,27 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt
 
 from neuroep import config
 
@@ -37,36 +39,36 @@ logger = logging.getLogger(__name__)
 # Paradigm definitions ──────────────────────────────────────────────────────
 _PARADIGMS: list[dict] = [
     {
-        "key":     "vep_pattern",
-        "label":   "Pattern VEP",
-        "accent":  "#534AB7",
-        "doc":     False,
-        "epochs":  100,
-        "rate":    2.0,
+        "key":    "vep_pattern",
+        "label":  "Pattern VEP",
+        "accent": "#534AB7",
+        "doc":    False,
+        "epochs": 100,
+        "rate":   2.0,
     },
     {
-        "key":     "vep_flash",
-        "label":   "Flash VEP",
-        "accent":  "#378ADD",
-        "doc":     True,
-        "epochs":  50,
-        "rate":    1.0,
+        "key":    "vep_flash",
+        "label":  "Flash VEP",
+        "accent": "#378ADD",
+        "doc":    True,
+        "epochs": 50,
+        "rate":   1.0,
     },
     {
-        "key":     "aep",
-        "label":   "Auditory EP",
-        "accent":  "#1D9E75",
-        "doc":     False,
-        "epochs":  100,
-        "rate":    2.0,
+        "key":    "aep",
+        "label":  "Auditory EP",
+        "accent": "#1D9E75",
+        "doc":    False,
+        "epochs": 100,
+        "rate":   2.0,
     },
     {
-        "key":     "p300_passive",
-        "label":   "P300 Passive",
-        "accent":  "#BA7517",
-        "doc":     True,
-        "epochs":  50,
-        "rate":    1.0,
+        "key":    "p300_passive",
+        "label":  "P300 Passive",
+        "accent": "#BA7517",
+        "doc":    True,
+        "epochs": 50,
+        "rate":   1.0,
     },
 ]
 
@@ -84,21 +86,19 @@ class ControlSidebar(QWidget):
     paradigm_changed(str)        : paradigm key string
     session_start()              : user clicked Start
     session_stop()               : user clicked Stop
-    timing_validation_requested(): user clicked Timing Validation
     """
 
-    sensitivity_changed            = pyqtSignal(float)
-    highpass_changed               = pyqtSignal(float)
-    lowpass_changed                = pyqtSignal(float)
-    notch_changed                  = pyqtSignal(object)
-    paradigm_changed               = pyqtSignal(str)
-    session_start                  = pyqtSignal()
-    session_stop                   = pyqtSignal()
-    timing_validation_requested    = pyqtSignal()
+    sensitivity_changed = pyqtSignal(float)
+    highpass_changed    = pyqtSignal(float)
+    lowpass_changed     = pyqtSignal(float)
+    notch_changed       = pyqtSignal(object)
+    paradigm_changed    = pyqtSignal(str)
+    session_start       = pyqtSignal()
+    session_stop        = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(220)
+        self.setMinimumWidth(300)
         self._current_paradigm: dict = _PARADIGMS[0]
         self._running: bool = False
         self._build_ui()
@@ -113,11 +113,9 @@ class ControlSidebar(QWidget):
         self._paradigm_group_box.setEnabled(not running)
 
     def get_subject_id(self) -> str:
-        """Return the current subject ID string."""
         return self._subject_edit.text().strip()
 
     def get_eye_tested(self) -> str:
-        """Return the selected eye-tested value."""
         return self._eye_combo.currentText()
 
     def get_target_epochs(self) -> int:
@@ -137,22 +135,39 @@ class ControlSidebar(QWidget):
     # ── Build UI ───────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        root.addWidget(self._build_paradigm_section())
-        root.addWidget(self._build_signal_section())
-        root.addWidget(self._build_protocol_section())
-        root.addStretch()
-        root.addWidget(self._build_action_section())
+        # ── Scrollable content area ────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        vbox = QVBoxLayout(content)
+        vbox.setContentsMargins(10, 12, 10, 12)
+        vbox.setSpacing(14)
+
+        vbox.addWidget(self._build_paradigm_section())
+        vbox.addWidget(self._build_signal_section())
+        vbox.addWidget(self._build_protocol_section())
+        vbox.addStretch()
+        vbox.addWidget(self._build_action_section())
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     # ── Section builders ───────────────────────────────────────────────────
 
     def _build_paradigm_section(self) -> QGroupBox:
         self._paradigm_group_box = QGroupBox("Paradigm")
         vbox = QVBoxLayout(self._paradigm_group_box)
-        vbox.setSpacing(4)
+        vbox.setContentsMargins(12, 16, 12, 12)
+        vbox.setSpacing(10)
 
         self._paradigm_btn_group = QButtonGroup(self)
         self._paradigm_btn_group.setExclusive(True)
@@ -161,6 +176,7 @@ class ControlSidebar(QWidget):
         for i, p in enumerate(_PARADIGMS):
             rb = QRadioButton(p["label"])
             rb.setStyleSheet(
+                f"QRadioButton {{ padding: 2px 0; }}"
                 f"QRadioButton::indicator:checked {{ background-color: {p['accent']}; "
                 f"border: 2px solid {p['accent']}; border-radius: 6px; }}"
             )
@@ -172,7 +188,20 @@ class ControlSidebar(QWidget):
 
         self._paradigm_btn_group.idClicked.connect(self._on_paradigm_changed)
 
-        # DoC badge — hidden until a DoC paradigm is selected
+        # Divider
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("border: none; border-top: 1px solid #2e3148; margin: 2px 0;")
+        vbox.addWidget(divider)
+
+        # Show-all toggle
+        self.show_all_cb = QCheckBox("Show all 16 channels")
+        self.show_all_cb.setChecked(False)
+        self.show_all_cb.setStyleSheet("QCheckBox { padding: 2px 0; }")
+        self.show_all_cb.stateChanged.connect(self._on_show_all_toggled)
+        vbox.addWidget(self.show_all_cb)
+
+        # DoC badge
         self._doc_badge = QLabel("DoC mode")
         self._doc_badge.setObjectName("doc_badge")
         self._doc_badge.setVisible(False)
@@ -181,43 +210,50 @@ class ControlSidebar(QWidget):
         return self._paradigm_group_box
 
     def _build_signal_section(self) -> QGroupBox:
-        grp  = QGroupBox("Signal controls")
-        form = QFormLayout(grp)
-        form.setSpacing(6)
+        grp = QGroupBox("Signal controls")
+        vbox = QVBoxLayout(grp)
+        vbox.setContentsMargins(12, 16, 12, 12)
+        vbox.setSpacing(16)
 
         # Sensitivity
+        self._sens_label = QLabel(f"{int(config.DEFAULT_SENSITIVITY)} µV")
         self._sens_slider = _make_slider(5, 200, int(config.DEFAULT_SENSITIVITY))
-        self._sens_label  = QLabel(f"{int(config.DEFAULT_SENSITIVITY)} µV")
         self._sens_slider.valueChanged.connect(self._on_sensitivity)
-        form.addRow("Sensitivity:", self._sens_slider)
-        form.addRow("", self._sens_label)
+        vbox.addLayout(_slider_row("Sensitivity", self._sens_label, self._sens_slider))
 
         # High-pass
+        self._hp_label = QLabel(f"{config.DEFAULT_HP_HZ:.1f} Hz")
         self._hp_slider = _make_slider(1, 100, int(config.DEFAULT_HP_HZ * 10))
-        self._hp_label  = QLabel(f"{config.DEFAULT_HP_HZ:.1f} Hz")
         self._hp_slider.valueChanged.connect(self._on_hp)
-        form.addRow("High-pass:", self._hp_slider)
-        form.addRow("", self._hp_label)
+        vbox.addLayout(_slider_row("High-pass", self._hp_label, self._hp_slider))
 
         # Low-pass
+        self._lp_label = QLabel(f"{int(config.DEFAULT_LP_HZ)} Hz")
         self._lp_slider = _make_slider(10, 100, int(config.DEFAULT_LP_HZ))
-        self._lp_label  = QLabel(f"{int(config.DEFAULT_LP_HZ)} Hz")
         self._lp_slider.valueChanged.connect(self._on_lp)
-        form.addRow("Low-pass:", self._lp_slider)
-        form.addRow("", self._lp_label)
+        vbox.addLayout(_slider_row("Low-pass", self._lp_label, self._lp_slider))
 
-        # Notch
+        # Notch — inline label + combo
+        notch_row = QHBoxLayout()
+        notch_row.setSpacing(8)
+        notch_row.addWidget(QLabel("Notch filter"))
+        notch_row.addStretch()
         self._notch_combo = QComboBox()
         self._notch_combo.addItems(["50 Hz", "60 Hz", "Off"])
+        self._notch_combo.setFixedWidth(90)
         self._notch_combo.currentTextChanged.connect(self._on_notch)
-        form.addRow("Notch:", self._notch_combo)
+        notch_row.addWidget(self._notch_combo)
+        vbox.addLayout(notch_row)
 
         return grp
 
     def _build_protocol_section(self) -> QGroupBox:
         grp  = QGroupBox("Protocol")
         form = QFormLayout(grp)
-        form.setSpacing(6)
+        form.setContentsMargins(12, 16, 12, 12)
+        form.setVerticalSpacing(12)
+        form.setHorizontalSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self._epochs_spin = QSpinBox()
         self._epochs_spin.setRange(50, 300)
@@ -242,7 +278,7 @@ class ControlSidebar(QWidget):
         # Clinical note — only visible in DoC mode
         self._note_label = QLabel("Clinical note:")
         self._note_edit  = QTextEdit()
-        self._note_edit.setFixedHeight(60)
+        self._note_edit.setFixedHeight(72)
         self._note_edit.setPlaceholderText("Optional free-text note…")
         self._note_label.setVisible(False)
         self._note_edit.setVisible(False)
@@ -254,8 +290,8 @@ class ControlSidebar(QWidget):
     def _build_action_section(self) -> QWidget:
         container = QWidget()
         vbox = QVBoxLayout(container)
-        vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(6)
+        vbox.setContentsMargins(0, 4, 0, 0)
+        vbox.setSpacing(8)
 
         self._btn_start = QPushButton("▶  Start session")
         self._btn_start.setObjectName("btn_start")
@@ -267,11 +303,6 @@ class ControlSidebar(QWidget):
         self._btn_stop.setVisible(False)
         self._btn_stop.clicked.connect(self._on_stop)
         vbox.addWidget(self._btn_stop)
-
-        self._btn_timing = QPushButton("⚡  Timing validation")
-        self._btn_timing.setObjectName("btn_timing")
-        self._btn_timing.clicked.connect(self.timing_validation_requested)
-        vbox.addWidget(self._btn_timing)
 
         return container
 
@@ -314,6 +345,10 @@ class ControlSidebar(QWidget):
         elif text == "60 Hz":
             self.notch_changed.emit(60.0)
 
+    def _on_show_all_toggled(self, state: int) -> None:
+        key = "ALL" if state == Qt.CheckState.Checked.value else self._current_paradigm["key"]
+        self.paradigm_changed.emit(key)
+
     def _on_start(self) -> None:
         self.session_start.emit()
 
@@ -321,7 +356,7 @@ class ControlSidebar(QWidget):
         self.session_stop.emit()
 
 
-# ── Helper ─────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _make_slider(minimum: int, maximum: int, value: int) -> QSlider:
     """Return a configured horizontal QSlider."""
@@ -330,3 +365,27 @@ def _make_slider(minimum: int, maximum: int, value: int) -> QSlider:
     s.setMaximum(maximum)
     s.setValue(value)
     return s
+
+
+def _slider_row(label_text: str, value_label: QLabel, slider: QSlider) -> QVBoxLayout:
+    """
+    Build a two-line control: [Label Name]  [current value]
+                               [========= slider =========]
+    """
+    container = QVBoxLayout()
+    container.setSpacing(5)
+
+    header = QHBoxLayout()
+    header.setSpacing(8)
+    name_lbl = QLabel(label_text)
+    value_label.setAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    value_label.setStyleSheet("color: #9a9891;")
+    header.addWidget(name_lbl)
+    header.addStretch()
+    header.addWidget(value_label)
+
+    container.addLayout(header)
+    container.addWidget(slider)
+    return container

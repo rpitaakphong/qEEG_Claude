@@ -10,6 +10,9 @@ Usage
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PyQt6.QtGui import QFont, QFontDatabase
 from PyQt6.QtWidgets import QApplication
 
 # ── Colour tokens ──────────────────────────────────────────────────────────
@@ -37,13 +40,59 @@ PALETTE: dict[str, str] = {
     "hover_blue":    "#4d9de8",
 }
 
+_FONT_FILE_CANDIDATES = (
+    Path(__file__).resolve().parents[1] / "assets" / "fonts" / "SF-Pro-Text-Regular.otf",
+    Path(__file__).resolve().parents[1] / "assets" / "fonts" / "SF-Pro-Display-Regular.otf",
+    Path(__file__).resolve().parents[1] / "assets" / "fonts" / "Inter-Regular.ttf",
+)
+_FONT_FAMILY_CANDIDATES = (
+    "SF Pro Text",
+    "SF Pro Display",
+    "Helvetica Neue",
+    "Segoe UI Variable",
+    "Inter",
+    "Segoe UI",
+    "Arial",
+)
+_FONT_STACK_QSS = (
+    '"SF Pro Text", "SF Pro Display", "Helvetica Neue", '
+    '"Segoe UI Variable", "Inter", "Segoe UI", Arial, sans-serif'
+)
+_BASE_FONT_SIZE = 11
+
+
+def _load_optional_fonts() -> None:
+    """Register bundled fonts when present so Qt can use them application-wide."""
+    for font_path in _FONT_FILE_CANDIDATES:
+        if font_path.exists():
+            QFontDatabase.addApplicationFont(str(font_path))
+
+
+def _resolve_ui_font_family() -> str:
+    """Pick the first available family from the preferred UI font stack."""
+    _load_optional_fonts()
+    available = {family.casefold(): family for family in QFontDatabase.families()}
+    for candidate in _FONT_FAMILY_CANDIDATES:
+        resolved = available.get(candidate.casefold())
+        if resolved:
+            return resolved
+    return QApplication.font().family()
+
+
+def _apply_ui_font(app: QApplication) -> None:
+    """Set a cleaner default UI font with an Apple-like fallback stack."""
+    font = QFont(_resolve_ui_font_family(), _BASE_FONT_SIZE)
+    font.setStyleHint(QFont.StyleHint.SansSerif)
+    font.setWeight(QFont.Weight.Normal)
+    app.setFont(font)
+
 # ── Dark theme stylesheet ──────────────────────────────────────────────────
 _DARK_QSS = """
 /* ── Global ────────────────────────────────────────────────────────── */
 QWidget {{
     background-color: {bg_primary};
     color: {text_primary};
-    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: {font_family};
     font-size: 11pt;
 }}
 
@@ -247,14 +296,15 @@ QTabBar::tab:selected {{
 
 /* ── Scroll bars ─────────────────────────────────────────────────────── */
 QScrollBar:vertical {{
-    background: {bg_primary};
-    width: 8px;
+    background: transparent;
+    width: 10px;
+    margin: 0;
 }}
 
 QScrollBar::handle:vertical {{
     background: {border};
-    border-radius: 4px;
-    min-height: 20px;
+    border-radius: 5px;
+    min-height: 24px;
 }}
 
 QScrollBar::handle:vertical:hover {{
@@ -263,6 +313,10 @@ QScrollBar::handle:vertical:hover {{
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
+}}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
 }}
 
 /* ── Status bar ─────────────────────────────────────────────────────── */
@@ -339,7 +393,7 @@ _LIGHT_QSS = """
 QWidget {{
     background-color: #f5f5f0;
     color: #1a1a1a;
-    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: {font_family};
     font-size: 11pt;
 }}
 
@@ -455,21 +509,35 @@ QTabBar::tab:selected {{
 }}
 
 QScrollBar:vertical {{
-    background: #f0f0ec;
-    width: 8px;
+    background: transparent;
+    width: 10px;
+    margin: 0;
 }}
 
 QScrollBar::handle:vertical {{
     background: #c0c0bc;
-    border-radius: 4px;
-    min-height: 20px;
+    border-radius: 5px;
+    min-height: 24px;
+}}
+
+QScrollBar::handle:vertical:hover {{
+    background: #8a8a86;
+}}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
 }}
 """
 
 
 def _format_qss(template: str, palette: dict[str, str]) -> str:
     """Substitute palette tokens into a QSS template."""
-    return template.format(**palette)
+    tokens = {**palette, "font_family": _FONT_STACK_QSS}
+    return template.format(**tokens)
 
 
 def apply_dark_theme(app: QApplication) -> None:
@@ -481,6 +549,7 @@ def apply_dark_theme(app: QApplication) -> None:
     app : QApplication
         The running Qt application instance.
     """
+    _apply_ui_font(app)
     app.setStyleSheet(_format_qss(_DARK_QSS, PALETTE))
 
 
@@ -493,4 +562,5 @@ def apply_light_theme(app: QApplication) -> None:
     app : QApplication
         The running Qt application instance.
     """
+    _apply_ui_font(app)
     app.setStyleSheet(_format_qss(_LIGHT_QSS, PALETTE))

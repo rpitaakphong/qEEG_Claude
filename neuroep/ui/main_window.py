@@ -9,7 +9,7 @@ Layout
 ├──────────────┬──────────────────────────────────────────────┤
 │              │                                              │
 │   Sidebar    │         Live 16-channel EEG viewer          │
-│   220px      │         (pyqtgraph, dark background)        │
+│   350px      │         (pyqtgraph, dark background)        │
 │              │                                              │
 ├──────────────┴──────────────────────────────────────────────┤
 │  Averaging panel placeholder (Phase 4)                       │
@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -53,8 +54,10 @@ from neuroep.stimuli.base import BaseParadigm, psychopy_available
 from neuroep.output.exporter import Exporter
 from neuroep.ui.averaging_panel import AveragingPanel
 from neuroep.ui.control_sidebar import ControlSidebar
+from neuroep.ui.education_panel import EducationPanel
 from neuroep.ui.eeg_panel import EEGPanel
 from neuroep.ui.theme import apply_dark_theme, apply_light_theme
+from neuroep.ui.validation_window import ValidationPanel
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +103,12 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._connect_signals()
 
+        # Apply the default paradigm immediately so EEG panel and education
+        # panel start in the correct state without waiting for a user click.
+        initial_key = self._sidebar.get_paradigm_key()
+        self._eeg_panel.set_paradigm(initial_key)
+        self._education_panel.on_paradigm_changed(initial_key)
+
         # Attach board to EEG panel immediately
         self._eeg_panel.set_board(manager)
 
@@ -123,25 +132,38 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._build_top_bar())
 
-        # Main content: sidebar + EEG panel side by side
-        content_splitter = QSplitter(Qt.Orientation.Horizontal)
-        content_splitter.setHandleWidth(2)
+        # Main content: tabbed left panel (controls + education) | EEG panel
+        self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._h_splitter.setHandleWidth(2)
 
-        self._sidebar   = ControlSidebar()
-        self._eeg_panel = EEGPanel()
+        self._sidebar         = ControlSidebar()
+        self._education_panel = EducationPanel()
+        self._eeg_panel       = EEGPanel()
 
-        content_splitter.addWidget(self._sidebar)
-        content_splitter.addWidget(self._eeg_panel)
-        content_splitter.setStretchFactor(0, 0)   # sidebar: fixed
-        content_splitter.setStretchFactor(1, 1)   # eeg: expands
-        content_splitter.setSizes([220, 900])
+        self._validation_panel = ValidationPanel(
+            serial_port=config.SERIAL_PORT,
+            board_manager=self._manager,
+        )
 
-        root.addWidget(content_splitter, stretch=1)
+        self._left_tabs = QTabWidget()
+        self._left_tabs.setMinimumWidth(350)
+        self._left_tabs.addTab(self._sidebar, "Controls")
+        self._left_tabs.addTab(self._education_panel, "Education")
+        self._left_tabs.addTab(self._validation_panel, "Validation")
+
+        self._h_splitter.addWidget(self._left_tabs)  # col 0 — tabbed panel
+        self._h_splitter.addWidget(self._eeg_panel)  # col 1 — stretches
+
+        self._h_splitter.setSizes([350, 900])
+        self._h_splitter.setCollapsible(0, False)
+        self._h_splitter.setCollapsible(1, False)
+
+        root.addWidget(self._h_splitter, stretch=1)
 
         # Averaging panel (Phase 4)
         self._avg_panel = AveragingPanel()
         self._avg_panel.setStyleSheet("border-top: 1px solid #2e3148;")
-        root.addWidget(self._avg_panel)
+        root.addWidget(self._avg_panel, stretch=1)
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -161,15 +183,15 @@ class MainWindow(QMainWindow):
         hbox = QHBoxLayout(bar)
         hbox.setContentsMargins(16, 0, 16, 0)
 
-        logo = QLabel("🧠 NeuroEP Studio")
+        logo = QLabel("NeuroEP Studio")
         logo.setStyleSheet(
-            "font-size: 14pt; font-weight: bold; color: #e8e6de; background: transparent;"
+            "font-size: 11pt; font-weight: bold; color: #e8e6de; background: transparent;"
         )
         hbox.addWidget(logo)
         hbox.addStretch()
 
         self._conn_label = QLabel("● Connected")
-        self._conn_label.setStyleSheet("color: #1D9E75; background: transparent;")
+        self._conn_label.setStyleSheet("color: #1D9E75; background: transparent; font-size: 9pt;")
         hbox.addWidget(self._conn_label)
 
         hbox.addSpacing(24)
@@ -230,7 +252,9 @@ class MainWindow(QMainWindow):
         tools_menu = menu_bar.addMenu("Tools")
 
         act_timing = QAction("Timing validation…", self)
-        act_timing.triggered.connect(self._open_timing_validation)
+        act_timing.triggered.connect(
+            lambda: self._left_tabs.setCurrentWidget(self._validation_panel)
+        )
         tools_menu.addAction(act_timing)
 
     def _connect_signals(self) -> None:
@@ -242,10 +266,13 @@ class MainWindow(QMainWindow):
         sb.lowpass_changed.connect(self._eeg_panel.set_lowpass)
         sb.notch_changed.connect(self._eeg_panel.set_notch)
 
+        # Paradigm selector → education panel + EEG channel filter
+        sb.paradigm_changed.connect(self._education_panel.on_paradigm_changed)
+        sb.paradigm_changed.connect(self._eeg_panel.set_paradigm)
+
         # Session controls
         sb.session_start.connect(self._start_session)
         sb.session_stop.connect(self._stop_session)
-        sb.timing_validation_requested.connect(self._open_timing_validation)
 
     # ── Session management ─────────────────────────────────────────────────
 
@@ -364,16 +391,33 @@ class MainWindow(QMainWindow):
     # ── Paradigm signal handlers ───────────────────────────────────────────
 
     def _on_marker_sent(self, code: int, t_onset: float) -> None:
-        """Process a new marker: extract epoch, check artifact, update average + panel."""
+        """
+        Schedule epoch extraction after the post-stimulus window has elapsed.
+
+        Extraction must be deferred: at marker time the ring buffer has no
+        post-stimulus data yet.  The correct buffer_start_index is also
+        computed at extraction time (not marker time) because more samples
+        will have arrived by then.
+        """
+        marker_sample_idx = self._manager._sample_count   # snapshot at marker onset
+        delay_ms = config.EPOCH_POST_MS + 100             # wait for post window + margin
+        QTimer.singleShot(
+            delay_ms,
+            lambda: self._extract_and_process_epoch(code, marker_sample_idx),
+        )
+
+    def _extract_and_process_epoch(self, code: int, marker_sample_idx: int) -> None:
+        """Extract one epoch (called ~600 ms after the marker)."""
         if (self._extractor is None or self._checker is None
                 or self._stats is None or self._averager is None):
             return
 
-        raw            = self._manager.ring_buffer.snapshot()
-        abs_marker_idx = self._manager._sample_count
+        raw           = self._manager.ring_buffer.snapshot()
+        buffer_start  = self._manager._sample_count - raw.shape[1]
 
-        markers = [(code, abs_marker_idx)]
-        epochs  = self._extractor.extract(raw, markers, buffer_start_index=0)
+        epochs = self._extractor.extract(
+            raw, [(code, marker_sample_idx)], buffer_start_index=buffer_start
+        )
 
         for ep in epochs:
             self._checker.check(ep)
@@ -614,13 +658,6 @@ class MainWindow(QMainWindow):
             )
         else:
             self._status_labels["elapsed"].setText("")
-
-    # ── Timing validation ──────────────────────────────────────────────────
-
-    def _open_timing_validation(self) -> None:
-        from neuroep.ui.validation_window import ValidationWindow
-        dlg = ValidationWindow(serial_port=config.SERIAL_PORT, parent=self)
-        dlg.show()
 
     # ── Close event ────────────────────────────────────────────────────────
 

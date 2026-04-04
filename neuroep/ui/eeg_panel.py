@@ -32,7 +32,7 @@ from typing import Optional
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from neuroep import config
@@ -70,6 +70,15 @@ class EEGPanel(QWidget):
         # Sensitivity in µV — controls vertical spacing between traces
         self._sensitivity: float = config.DEFAULT_SENSITIVITY
 
+        # Per-channel height system (in µV display units)
+        self._base_height: float = self._sensitivity * 2.0
+        self._ch_gap: float = 0.0
+        self._channel_height: list[float] = [self._base_height] * config.N_CHANNELS
+        self._offsets: list[float] = [0.0] * config.N_CHANNELS
+
+        # Active paradigm (canonical key e.g. "VEP_PATTERN" or "ALL")
+        self._active_paradigm: str = "ALL"
+
         # Filtered display buffer — pre-allocated, written circularly
         # Shape: (N_CHANNELS, _WINDOW_SAMPLES)
         self._disp_buf = np.zeros(
@@ -81,6 +90,8 @@ class EEGPanel(QWidget):
         self._processed_raw = 0
 
         self._build_plot()
+        self._recompute_offsets()
+
         self._timer = QTimer(self)
         self._timer.setInterval(_REFRESH_MS)
         self._timer.timeout.connect(self._refresh)
@@ -111,12 +122,46 @@ class EEGPanel(QWidget):
         self._filters = None
         logger.info("EEGPanel: board detached.")
 
+    def set_paradigm(self, paradigm_key: str) -> None:
+        """
+        Show only the ERP-relevant channels; hide everything else.
+        Called by main_window when paradigm_changed signal fires.
+
+        Parameters
+        ----------
+        paradigm_key : str
+            Sidebar key (e.g. ``"vep_pattern"``) or canonical key
+            (e.g. ``"VEP_PATTERN"``).  ``"ALL"`` shows every channel.
+        """
+        # Normalise sidebar keys → canonical keys
+        canonical = config.PARADIGM_KEY_MAP.get(paradigm_key, paradigm_key)
+        self._active_paradigm = canonical
+
+        visible_set = config.PARADIGM_VISIBLE_CHANNELS.get(canonical)  # None = all
+
+        for i, ch_name in enumerate(config.CHANNEL_NAMES):
+            show = visible_set is None or ch_name in visible_set
+            self._curves[i].setVisible(show)
+            self._ch_labels[i].setVisible(show)
+            if show:
+                color = QColor(config.CHANNEL_COLORS[i])
+                self._curves[i].setPen(pg.mkPen(color, width=1))
+                self._ch_labels[i].setColor(color)
+                self._channel_height[i] = self._base_height
+            else:
+                self._channel_height[i] = 0.0   # takes no Y space
+
+        self._recompute_offsets()
+        self._plot_widget.update()
+
     # ── Filter control slots (called by control sidebar) ───────────────────
 
     def set_sensitivity(self, uv: float) -> None:
         """Update the channel-spacing sensitivity (µV half-range)."""
         self._sensitivity = max(1.0, float(uv))
-        self._update_channel_spacing()
+        self._base_height = self._sensitivity * 2.5
+        # Re-apply current paradigm heights at new scale
+        self.set_paradigm(self._active_paradigm)
 
     def set_highpass(self, hz: float) -> None:
         """Update the high-pass cutoff on the live filter chain."""
@@ -147,7 +192,12 @@ class EEGPanel(QWidget):
 
         plot = self._plot_widget.getPlotItem()
         plot.hideAxis("left")
-        plot.hideAxis("bottom")
+        plot.showAxis("bottom")
+        plot.setLabel("bottom", "Time (s)", **{"color": "#9a9891", "font-size": "11pt"})
+        plot.getAxis("bottom").setTextPen(pg.mkPen("#9a9891"))
+        plot.getAxis("bottom").setPen(pg.mkPen("#2e3148"))
+        plot.getAxis("bottom").setTickFont(QFont("Segoe UI", 9))
+        plot.showGrid(x=True, y=False, alpha=0.18)
         plot.setMenuEnabled(False)
         plot.setMouseEnabled(x=False, y=False)
 
@@ -156,10 +206,10 @@ class EEGPanel(QWidget):
             -config.DISPLAY_SECONDS, 0, _WINDOW_SAMPLES, dtype=np.float32
         )
 
-        self._curves: list[pg.PlotDataItem] = []
-        self._labels: list[pg.TextItem]     = []
+        self._curves:    list[pg.PlotDataItem] = []
+        self._ch_labels: list[pg.TextItem]     = []
 
-        label_font = QFont("Courier New", 9)
+        label_font = QFont("Segoe UI", 8)
 
         for ch in range(config.N_CHANNELS):
             color = config.CHANNEL_COLORS[ch]
@@ -174,37 +224,128 @@ class EEGPanel(QWidget):
             plot.addItem(curve)
             self._curves.append(curve)
 
+            # Label: "ch01 Fp1" so technician can cross-reference the amplifier
             label = pg.TextItem(
-                text=config.CHANNEL_NAMES[ch],
+                text=f"ch{ch + 1:02d} {config.CHANNEL_NAMES[ch]}",
                 color=color,
                 anchor=(1.0, 0.5),
             )
             label.setFont(label_font)
             plot.addItem(label)
-            self._labels.append(label)
+            self._ch_labels.append(label)
 
-        plot.setXRange(-config.DISPLAY_SECONDS, 0, padding=0)
-        self._update_channel_spacing()
+        # Extend X range left to create a label margin column.
+        # Custom tick positions are set so the bottom axis only labels the
+        # actual EEG data zone (−5 … 0), not the margin.
+        self._x_left = -(config.DISPLAY_SECONDS + 0.6)
+        plot.setXRange(self._x_left, 0, padding=0)
+
+        # Only show time ticks inside the real data window
+        bottom_axis = plot.getAxis("bottom")
+        tick_major = [(float(t), str(t)) for t in range(-config.DISPLAY_SECONDS, 1)]
+        bottom_axis.setTicks([tick_major, []])
+
+        # ── Axis decorations ──────────────────────────────────────────────
+
+        # Rotated "µV" label on the left margin (inside the label zone)
+        y_label = pg.TextItem(text="µV", color="#9a9891", angle=90, anchor=(0.5, 0.5))
+        y_label.setFont(QFont("Segoe UI", 10))
+        self._y_axis_label = y_label
+        plot.addItem(y_label)
+
+        # Vertical divider line separating the label margin from the EEG traces
+        self._margin_line = pg.InfiniteLine(
+            pos=-config.DISPLAY_SECONDS,
+            angle=90,
+            pen=pg.mkPen("#2e3148", width=1),
+        )
+        plot.addItem(self._margin_line)
+
+        # Scale bar: vertical reference line near the right edge + text label.
+        # Shows the current sensitivity value so the reader knows 1 channel slot height.
+        self._scale_bar = pg.PlotDataItem(
+            pen=pg.mkPen("#9a9891", width=1.5),
+        )
+        self._scale_bar_top = pg.PlotDataItem(   # horizontal cap – top
+            pen=pg.mkPen("#9a9891", width=1.5),
+        )
+        self._scale_bar_bot = pg.PlotDataItem(   # horizontal cap – bottom
+            pen=pg.mkPen("#9a9891", width=1.5),
+        )
+        self._scale_text = pg.TextItem(
+            text="", color="#9a9891", anchor=(0.0, 0.5),
+        )
+        self._scale_text.setFont(QFont("Courier New", 7))
+        for item in (self._scale_bar, self._scale_bar_top,
+                     self._scale_bar_bot, self._scale_text):
+            plot.addItem(item)
 
         layout.addWidget(self._plot_widget)
 
-    def _update_channel_spacing(self) -> None:
-        """Recalculate Y range and label positions after sensitivity change."""
-        spacing = self._sensitivity * 2.5
-        total   = spacing * config.N_CHANNELS
+    def _recompute_offsets(self) -> None:
+        """
+        Recalculate Y offsets for visible channels only.
+        Hidden channels (height == 0) are skipped so no blank rows appear.
+        Offsets are centred around zero.  Also repositions axis decorations.
+        """
+        running_y = 0.0
+        for i in range(config.N_CHANNELS - 1, -1, -1):   # bottom → top
+            self._offsets[i] = running_y
+            if self._channel_height[i] > 0:
+                running_y += self._channel_height[i] + self._ch_gap
+
+        # Centre around zero
+        center = max(running_y / 2.0, 1.0)   # guard against empty selection
+        for i in range(config.N_CHANNELS):
+            self._offsets[i] -= center
+
+        # Set Y range tightly around visible channels (± half a slot for padding)
+        # Using (-center, center) wastes a full slot at the top; use actual extents.
+        visible_offsets = [
+            self._offsets[i] for i in range(config.N_CHANNELS)
+            if self._channel_height[i] > 0
+        ]
+        half_slot = self._base_height * 0.5
+        if visible_offsets:
+            y_min = min(visible_offsets) - half_slot
+            y_max = max(visible_offsets) + half_slot
+        else:
+            y_min, y_max = -center, center
 
         plot = self._plot_widget.getPlotItem()
-        plot.setYRange(-total / 2, total / 2, padding=0)
+        plot.setYRange(y_min, y_max, padding=0)
 
+        # Channel labels sit inside the margin zone, right-aligned to the divider
+        label_x = -config.DISPLAY_SECONDS - 0.08
         for ch in range(config.N_CHANNELS):
-            self._labels[ch].setPos(
-                -config.DISPLAY_SECONDS - 0.05, self._channel_offset(ch)
-            )
+            self._ch_labels[ch].setPos(label_x, self._offsets[ch])
 
-    def _channel_offset(self, ch: int) -> float:
-        """Vertical offset in µV for channel *ch* (ch=0 at top, ch=15 at bottom)."""
-        spacing = self._sensitivity * 2.5
-        return ((config.N_CHANNELS - 1) / 2.0 - ch) * spacing
+        # ── Axis decorations ──────────────────────────────────────────────
+
+        # Rotated "µV" label — centred in the margin zone, away from channel labels
+        if hasattr(self, "_y_axis_label"):
+            self._y_axis_label.setPos(-config.DISPLAY_SECONDS - 0.42, 0)
+
+        # Scale bar — vertical reference in the top-right corner showing
+        # the current sensitivity (µV) so amplitude can be judged at a glance.
+        if hasattr(self, "_scale_bar"):
+            bar_x   = -0.15                          # 0.15 s before "now"
+            cap_hw  = 0.06                           # half-width of horizontal caps
+            bar_top = y_max - half_slot * 0.4        # near top of visible area
+            bar_bot = bar_top - self._sensitivity    # one sensitivity step down
+
+            self._scale_bar.setData(
+                x=[bar_x, bar_x], y=[bar_bot, bar_top]
+            )
+            self._scale_bar_top.setData(
+                x=[bar_x - cap_hw, bar_x + cap_hw], y=[bar_top, bar_top]
+            )
+            self._scale_bar_bot.setData(
+                x=[bar_x - cap_hw, bar_x + cap_hw], y=[bar_bot, bar_bot]
+            )
+            self._scale_text.setText(f"{int(self._sensitivity)} µV")
+            self._scale_text.setPos(bar_x + cap_hw + 0.02,
+                                    (bar_top + bar_bot) / 2.0)
 
     # ── Refresh slot ───────────────────────────────────────────────────────
 
@@ -217,22 +358,23 @@ class EEGPanel(QWidget):
             return
 
         # Full raw snapshot (chronological order)
-        raw = self._board.ring_buffer.snapshot()   # (16, total_available)
-        total_available = raw.shape[1]
+        raw = self._board.ring_buffer.snapshot()   # (16, samples_in_buffer)
+        total_in_buffer = raw.shape[1]
 
-        if total_available == 0:
+        if total_in_buffer == 0:
             return
 
-        # Determine how many samples are genuinely new
-        new_count = total_available - self._processed_raw
+        # Use the board's unbounded sample_count so the comparison never stalls
+        # after the ring buffer fills (ring buffer caps at 30 s; sample_count grows forever).
+        current_count = self._board.sample_count
+        new_count = current_count - self._processed_raw
         if new_count <= 0:
             # No new data — just redraw existing buffer
             self._draw()
             return
 
-        # Cap: if we fell behind by more than _WINDOW_SAMPLES, skip ahead
-        if new_count > _WINDOW_SAMPLES:
-            new_count = _WINDOW_SAMPLES
+        # Cap to what's actually in the buffer and the display window
+        new_count = min(new_count, total_in_buffer, _WINDOW_SAMPLES)
 
         # Extract only the new samples from the end of the snapshot
         new_raw = raw[:, -new_count:]
@@ -246,7 +388,7 @@ class EEGPanel(QWidget):
 
         # Write new filtered samples into the circular display buffer
         self._write_to_disp_buf(new_filtered)
-        self._processed_raw = total_available
+        self._processed_raw = current_count
 
         self._draw()
 
@@ -271,5 +413,5 @@ class EEGPanel(QWidget):
         )
 
         for ch in range(config.N_CHANNELS):
-            y = display[ch].astype(np.float32) + self._channel_offset(ch)
+            y = display[ch].astype(np.float32) + self._offsets[ch]
             self._curves[ch].setData(x=self._t_axis, y=y)

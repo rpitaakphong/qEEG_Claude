@@ -13,7 +13,12 @@ or:
 from __future__ import annotations
 
 import logging
+import os
 import sys
+
+# Must be set before pyglet/PsychoPy is imported anywhere.
+# Disables the shadow window that requires ARB_pixel_format OpenGL support.
+os.environ.setdefault("PYGLET_SHADOW_WINDOW", "0")
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
@@ -52,7 +57,7 @@ def main() -> None:
         sys.exit(1)
 
     window = MainWindow(manager)
-    window.show()
+    window.showMaximized()
 
     logger.info("NeuroEP Studio started.")
     sys.exit(app.exec())

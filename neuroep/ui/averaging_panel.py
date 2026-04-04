@@ -85,7 +85,10 @@ class AveragingPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(220)
+        self.setMinimumHeight(400)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
 
         self._paradigm_color = _DEFAULT_COLOR
         self._save_cb:   Optional[Callable[[Path], None]] = None

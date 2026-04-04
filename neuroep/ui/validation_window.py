@@ -1,5 +1,5 @@
 """
-ui/validation_window.py — Timing validation dialog with three tabs.
+ui/validation_window.py — Timing validation panel and dialog with three tabs.
 
 Each tab corresponds to one validation mode:
   Tab A — Synthetic pipeline test  (no hardware)
@@ -36,14 +36,14 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
-    QTabWidget,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -70,53 +70,110 @@ _THRESHOLDS = {
 # Histogram bin edges in ms
 _HIST_BINS_A = np.linspace(-5.0,  5.0,  41)   # ±5 ms, 0.25 ms bins
 _HIST_BINS_B = np.linspace(-20.0, 20.0, 41)   # ±20 ms, 1 ms bins
-_HIST_BINS_C = np.linspace(-10.0, 10.0, 41)   # ±10 ms, 0.5 ms bins
+_HIST_BINS_C = np.linspace(-10.0, 10.0, 41)   # ±10 ms, 0.5 ms bins (jitter around median)
 
 _HIST_BINS = {"A": _HIST_BINS_A, "B": _HIST_BINS_B, "C": _HIST_BINS_C}
 
 
-class ValidationWindow(QDialog):
+class ValidationPanel(QWidget):
     """
-    Modal timing validation dialog.
+    Timing validation panel — embeddable as a tab or wrapped in a dialog.
 
     Parameters
     ----------
     serial_port : str
         Serial port for real-hardware tests.
+    board_manager : BoardManager, optional
+        Live board manager; None → synthetic fallback.
     parent : QWidget, optional
     """
 
-    def __init__(self, serial_port: str = config.SERIAL_PORT, parent=None) -> None:
+    def __init__(self, serial_port: str = config.SERIAL_PORT,
+                 board_manager=None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Timing Validation")
-        self.setMinimumSize(700, 520)
-        self.setModal(False)   # non-modal so EEG continues
-        self._serial_port = serial_port
-        self._workers: dict[str, object] = {}   # mode → QThread
+        self._serial_port   = serial_port
+        self._board_manager = board_manager   # None → synthetic fallback
+        self._workers: dict[str, object] = {}
         self._samples: dict[str, list[float]] = {"A": [], "B": [], "C": []}
         self._build_ui()
 
     # ── Build UI ───────────────────────────────────────────────────────────
 
+    _SEG_BASE = """
+        QPushButton {{
+            background: #1c1f2e;
+            color: #9a9891;
+            border: 1px solid #2e3148;
+            padding: 5px 10px;
+            font-size: 9pt;
+            border-radius: 0;
+        }}
+        QPushButton:checked {{
+            background: #2e3148;
+            color: #e8e6de;
+            border-color: #534AB7;
+        }}
+        QPushButton:hover:!checked {{
+            background: #252838;
+            color: #c8c6be;
+        }}
+    """
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_tab("A"), "A — Synthetic pipeline")
-        tabs.addTab(self._build_tab("B"), "B — Photodiode hardware")
-        tabs.addTab(self._build_tab("C"), "C — Square wave")
-        root.addWidget(tabs)
+        # ── Segmented mode selector ────────────────────────────────────────
+        selector = QHBoxLayout()
+        selector.setSpacing(0)
+        self._mode_btns: dict[str, QPushButton] = {}
+        modes = [("A", "Synthetic"), ("B", "Photodiode"), ("C", "Square wave")]
+        for i, (mode, label) in enumerate(modes):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(self._SEG_BASE)
+            # rounded corners only on the ends
+            if i == 0:
+                btn.setStyleSheet(self._SEG_BASE + "QPushButton { border-radius: 0; border-top-left-radius: 4px; border-bottom-left-radius: 4px; }")
+            elif i == len(modes) - 1:
+                btn.setStyleSheet(self._SEG_BASE + "QPushButton { border-radius: 0; border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-left: none; }")
+            else:
+                btn.setStyleSheet(self._SEG_BASE + "QPushButton { border-left: none; }")
+            btn.clicked.connect(lambda _, m=mode: self._select_mode(m))
+            self._mode_btns[mode] = btn
+            selector.addWidget(btn)
+        selector.addStretch()
+        root.addLayout(selector)
 
-        close_btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        close_btn.rejected.connect(self.reject)
-        root.addWidget(close_btn)
+        # ── Stacked pages ──────────────────────────────────────────────────
+        self._stack = QStackedWidget()
+        self._mode_index = {"A": 0, "B": 1, "C": 2}
+        for mode, _ in modes:
+            self._stack.addWidget(self._build_mode_page(mode))
+        root.addWidget(self._stack, stretch=1)
 
-    def _build_tab(self, mode: str) -> QWidget:
+        # Activate first mode
+        self._select_mode("A")
+
+    def _select_mode(self, active: str) -> None:
+        for mode, btn in self._mode_btns.items():
+            btn.setChecked(mode == active)
+        self._stack.setCurrentIndex(self._mode_index[active])
+
+    def _build_mode_page(self, mode: str) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
         th = _THRESHOLDS[mode]
-        tab = QWidget()
-        vbox = QVBoxLayout(tab)
-        vbox.setSpacing(8)
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        vbox = QVBoxLayout(inner)
+        vbox.setContentsMargins(0, 4, 4, 4)
+        vbox.setSpacing(10)
 
         # Description
         desc_text = {
@@ -211,6 +268,8 @@ class ValidationWindow(QDialog):
         export_btn.clicked.connect(lambda _, m=mode: self._export_csv(m))
         vbox.addWidget(export_btn)
 
+        vbox.addStretch()
+
         # Store refs keyed by mode (accessed as self._run_btn_A, etc.)
         setattr(self, f"_run_btn_{mode}",    run_btn)
         setattr(self, f"_stop_btn_{mode}",   stop_btn)
@@ -221,7 +280,8 @@ class ValidationWindow(QDialog):
         setattr(self, f"_table_{mode}",      table)
         setattr(self, f"_export_btn_{mode}", export_btn)
 
-        return tab
+        scroll.setWidget(inner)
+        return scroll
 
     # ── Run / stop ─────────────────────────────────────────────────────────
 
@@ -241,7 +301,10 @@ class ValidationWindow(QDialog):
             worker = PhotodiodeTimingTest(serial_port=self._serial_port)
         else:
             from neuroep.validation.squarewave_test import SquareWaveTimingTest
-            worker = SquareWaveTimingTest(use_synthetic=True)
+            if self._board_manager is not None:
+                worker = SquareWaveTimingTest(board_manager=self._board_manager)
+            else:
+                worker = SquareWaveTimingTest(use_synthetic=True)
 
         worker.progress.connect(lambda v, m=mode: self._on_progress(m, v))
         worker.result.connect(lambda vals, m=mode: self._on_result(m, vals))
@@ -359,3 +422,31 @@ class ValidationWindow(QDialog):
                 writer.writerow([i, f"{v:.4f}"])
 
         logger.info("Validation results exported to %s", path)
+
+
+class ValidationWindow(QDialog):
+    """
+    Non-modal timing validation dialog wrapping ValidationPanel.
+
+    Parameters
+    ----------
+    serial_port : str
+        Serial port for real-hardware tests.
+    board_manager : BoardManager, optional
+    parent : QWidget, optional
+    """
+
+    def __init__(self, serial_port: str = config.SERIAL_PORT,
+                 board_manager=None, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Timing Validation")
+        self.setMinimumSize(700, 520)
+        self.setModal(False)   # non-modal so EEG continues
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        self._panel = ValidationPanel(serial_port=serial_port,
+                                      board_manager=board_manager)
+        root.addWidget(self._panel)
+        close_btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_btn.rejected.connect(self.reject)
+        root.addWidget(close_btn)

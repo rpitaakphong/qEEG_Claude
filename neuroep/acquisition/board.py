@@ -203,6 +203,36 @@ class BoardManager:
         self._thread.start()
         logger.info("Board connected and acquisition thread started.")
 
+    @property
+    def raw_board(self) -> Optional[BoardShim]:
+        """Direct access to the underlying BoardShim (use with care)."""
+        return self._board
+
+    @property
+    def board_id(self) -> int:
+        """The BrainFlow board ID used for this session."""
+        return self._board_id
+
+    def pause_acquisition(self) -> None:
+        """Stop the background acquisition thread without disconnecting the board."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        logger.info("Acquisition thread paused.")
+
+    def resume_acquisition(self) -> None:
+        """Restart the background acquisition thread after a pause."""
+        if self._board is None:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._acquisition_loop,
+            name="BrainFlow-Acquisition",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("Acquisition thread resumed.")
+
     def disconnect(self) -> None:
         """Stop streaming and release the BrainFlow session."""
         self._stop_event.set()
@@ -226,6 +256,12 @@ class BoardManager:
     def is_connected(self) -> bool:
         """``True`` if the board session is active."""
         return self._board is not None and self._is_streaming
+
+    @property
+    def sample_count(self) -> int:
+        """Total samples received since streaming started (unbounded)."""
+        with self._marker_lock:
+            return self._sample_count
 
     # ── Marker injection ───────────────────────────────────────────────────
 
@@ -306,6 +342,13 @@ class BoardManager:
                 (config.N_CHANNELS - len(eeg_rows), data.shape[1]), dtype=np.float32
             )
             eeg = np.vstack([available, pad])
+
+        # Replace synthetic board signal with a clean low-amplitude sine wave
+        if self._board_id == BoardIds.SYNTHETIC_BOARD.value:
+            n_samples = eeg.shape[1]
+            t = (self._sample_count + np.arange(n_samples)) / config.BOARD_SAMPLE_RATE
+            sine = (20.0 * np.sin(2 * np.pi * 10.0 * t)).astype(np.float32)
+            eeg = np.tile(sine, (config.N_CHANNELS, 1))
 
         self.ring_buffer.push(eeg)
         with self._marker_lock:

@@ -39,7 +39,7 @@ CHUNK_SIZE: int = 10                # Samples pulled per timer tick
 DEFAULT_HP_HZ: float = 1.0
 DEFAULT_LP_HZ: float = 40.0
 DEFAULT_NOTCH_HZ: float = 50.0
-DEFAULT_SENSITIVITY: float = 50.0   # µV peak-to-peak half-range for display
+DEFAULT_SENSITIVITY: float = 100.0  # µV peak-to-peak half-range for display
 
 # ── Epoch / averaging ──────────────────────────────────────────────────────
 EPOCH_PRE_MS: int = 100
@@ -54,3 +54,23 @@ TIMING_N_TRIALS: int = 50
 
 # ── Output ─────────────────────────────────────────────────────────────────
 OUTPUT_DIR: str = "sessions"
+
+# ── Paradigm channel visibility ────────────────────────────────────────────
+# Channels that get full brightness for each paradigm (essential + useful + artifact).
+# None means all channels at full brightness.
+PARADIGM_VISIBLE_CHANNELS: dict[str, list[str] | None] = {
+    "VEP_PATTERN": ["Oz", "O1", "O2", "Pz", "Fz", "Fp1", "Fp2"],
+    "VEP_FLASH":   ["Oz", "O1", "O2", "Pz", "Fz", "Fp1", "Fp2"],
+    "AEP":         ["Cz", "Fz", "C3", "C4", "Fp1", "Fp2", "Oz"],
+    "P300":        ["Pz", "Cz", "Fz", "P3", "P4", "Fp1", "Fp2"],
+    "ALL":         None,
+}
+
+# Maps sidebar-emitted lowercase keys to canonical uppercase keys used by
+# PARADIGM_VISIBLE_CHANNELS and EducationPanel.
+PARADIGM_KEY_MAP: dict[str, str] = {
+    "vep_pattern":  "VEP_PATTERN",
+    "vep_flash":    "VEP_FLASH",
+    "aep":          "AEP",
+    "p300_passive": "P300",
+}

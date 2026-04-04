@@ -1,2 +1,9 @@
+# For mac OS
+
 cd /Users/pitaakphong/Documents/Personal/7_qEEG_Claude
 .venv311/bin/python -m neuroep.main
+
+# For PC powershell
+cd c:\Users\PC\Desktop\QEEGClaude\qEEG_Claude
+.\.venv\Scripts\Activate.ps1
+python -m neuroep.main

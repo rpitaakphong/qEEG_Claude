@@ -25,19 +25,29 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
-# Attempt PsychoPy import — degrade if not installed
-try:
-    from psychopy import core, visual
-    from psychopy.hardware import keyboard
-    _PSYCHOPY_AVAILABLE = True
-except ImportError:
-    _PSYCHOPY_AVAILABLE = False
-    logger.warning("PsychoPy not found — stimulus delivery disabled.")
-
-
 def psychopy_available() -> bool:
-    """Return True if PsychoPy is importable."""
-    return _PSYCHOPY_AVAILABLE
+    """Return True if PsychoPy is importable (lightweight check, no side effects)."""
+    import importlib.util
+    return importlib.util.find_spec("psychopy") is not None
+
+
+def _init_psychopy_in_thread():
+    """
+    Import pyglet and psychopy.visual INSIDE the worker thread.
+
+    pyglet requires that EventLoop.run() is called on the same thread that
+    first imports pyglet.app.  Deferring all imports to the QThread's run()
+    call satisfies this constraint.  Returns (core, visual) or raises.
+    """
+    try:
+        import pyglet
+        pyglet.options["shadow_window"] = False
+        pyglet.options["debug_gl"] = False
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    from psychopy import core, visual  # noqa: PLC0415
+    return core, visual
 
 
 class StimulusWindow:
@@ -59,21 +69,25 @@ class StimulusWindow:
         screen: int = 1,
         color:  tuple[float, float, float] = (-1.0, -1.0, -1.0),
     ) -> None:
-        if not _PSYCHOPY_AVAILABLE:
+        if not psychopy_available():
             raise RuntimeError(
                 "PsychoPy is not installed. "
                 "Run: pip install psychopy"
             )
+        # Import here (inside the QThread worker) so pyglet.app is imported on
+        # the same thread that will run its event loop — satisfying pyglet's
+        # threading constraint.
+        self._core, visual = _init_psychopy_in_thread()
         self.win = visual.Window(
-            fullscr    = True,
-            screen     = screen,
-            color      = color,
-            colorSpace = "rgb",
-            units      = "norm",
-            allowGUI   = False,
+            fullscr      = True,
+            screen       = screen,
+            color        = color,
+            colorSpace   = "rgb",
+            units        = "norm",
+            allowGUI     = False,
             waitBlanking = True,
         )
-        self.clock = core.Clock()
+        self.clock = self._core.Clock()
         logger.info(
             "PsychoPy window opened on screen %d (%dx%d).",
             screen,
@@ -89,7 +103,7 @@ class StimulusWindow:
         return value as T_onset.
         """
         self.win.flip()
-        return core.getTime()
+        return self._core.getTime()
 
     def close(self) -> None:
         """Close the PsychoPy window."""
@@ -147,7 +161,7 @@ class BaseParadigm(QThread):
     def run(self) -> None:
         """Open the stimulus window, run trials, clean up."""
         try:
-            if not _PSYCHOPY_AVAILABLE:
+            if not psychopy_available():
                 raise RuntimeError("PsychoPy is not installed.")
 
             self._stim_win = StimulusWindow(screen=self._screen)
