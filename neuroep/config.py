@@ -23,11 +23,19 @@ CHANNEL_COLORS: list[str] = [
     "#ED93B1", "#EF9F27", "#9FE1CB", "#AFA9EC",
 ]
 
-# Channels of interest per paradigm (0-based indices into CHANNEL_NAMES)
+# Channels of interest per paradigm (0-based indices into CHANNEL_NAMES).
+# The first index is the primary display/component-detection channel.
 EP_CHANNELS: dict[str, list[int]] = {
-    "VEP":  [8, 9, 15],    # O1, O2, Oz
-    "AEP":  [14, 4, 5],    # Fz, C3, C4
-    "P300": [14, 7, 15],   # Fz, P4, Oz
+    "VEP_PATTERN": [0],          # Ch1 = Oz (active, ref SRB2/Fz)
+    "VEP":         [8, 9, 15],   # Flash VEP — O1, O2, Oz
+    "AEP":         [14, 4, 5],   # Fz, C3, C4
+    "P300":        [14, 7, 15],  # Fz, P4, Oz
+}
+
+# Human-readable channel labels that override CHANNEL_NAMES for specific paradigms.
+# Used in averaging panel titles, PDF reports, and CSV headers.
+CHANNEL_DISPLAY_NAMES: dict[str, dict[int, str]] = {
+    "VEP_PATTERN": {0: "Oz (Ch1, ref: Fz)"},
 }
 
 # ── Display ────────────────────────────────────────────────────────────────
@@ -59,7 +67,7 @@ OUTPUT_DIR: str = "sessions"
 # Channels that get full brightness for each paradigm (essential + useful + artifact).
 # None means all channels at full brightness.
 PARADIGM_VISIBLE_CHANNELS: dict[str, list[str] | None] = {
-    "VEP_PATTERN": ["Oz", "O1", "O2", "Pz", "Fz", "Fp1", "Fp2"],
+    "VEP_PATTERN": ["Fp1"],                                        # Ch1 = Oz only
     "VEP_FLASH":   ["Oz", "O1", "O2", "Pz", "Fz", "Fp1", "Fp2"],
     "AEP":         ["Cz", "Fz", "C3", "C4", "Fp1", "Fp2", "Oz"],
     "P300":        ["Pz", "Cz", "Fz", "P3", "P4", "Fp1", "Fp2"],

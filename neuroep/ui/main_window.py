@@ -50,7 +50,7 @@ from neuroep.processing.artifact import ArtifactChecker, RejectionStats
 from neuroep.processing.averaging import RunningAverage
 from neuroep.processing.components import ComponentDetector
 from neuroep.processing.epochs import EpochExtractor
-from neuroep.stimuli.base import BaseParadigm, psychopy_available
+from neuroep.stimuli.base import BaseParadigm, StimulusWidget
 from neuroep.output.exporter import Exporter
 from neuroep.ui.averaging_panel import AveragingPanel
 from neuroep.ui.control_sidebar import ControlSidebar
@@ -87,8 +87,9 @@ class MainWindow(QMainWindow):
         self._averager:   Optional[RunningAverage]  = None
         self._detector:   Optional[ComponentDetector] = None
 
-        # Active paradigm thread
+        # Active paradigm thread and its stimulus widget
         self._paradigm: Optional[BaseParadigm] = None
+        self._stim_widget: Optional[StimulusWidget] = None
 
         # Exporter for current session
         self._exporter: Optional[Exporter] = None
@@ -292,8 +293,10 @@ class MainWindow(QMainWindow):
         self._session_buffer_start    = self._manager.ring_buffer.n_samples
 
         # Fresh processing pipeline
+        ep_key = config.PARADIGM_KEY_MAP.get(paradigm, paradigm.upper())
+        ep_chs = config.EP_CHANNELS.get(ep_key) or config.EP_CHANNELS.get(ep_key.split("_")[0])
         self._extractor = EpochExtractor()
-        self._checker   = ArtifactChecker()
+        self._checker   = ArtifactChecker(channels=ep_chs)
         self._stats     = RejectionStats()
         self._averager  = RunningAverage()
         self._detector  = ComponentDetector()
@@ -309,31 +312,27 @@ class MainWindow(QMainWindow):
 
         # Reset averaging panel and wire save/export callbacks
         self._avg_panel.reset()
+        _ep_key_s = config.PARADIGM_KEY_MAP.get(paradigm, paradigm.upper())
+        _ep_chs_s = config.EP_CHANNELS.get(_ep_key_s) or config.EP_CHANNELS.get(_ep_key_s.split("_")[0], [0])
+        _ep_ch_s  = _ep_chs_s[0]
         self._exporter = Exporter(
             session_id   = session_id,
             paradigm     = paradigm,
             subject_id   = subject or "ANON",
             n_epochs     = 0,
-            channel_name = config.CHANNEL_NAMES[
-                config.EP_CHANNELS.get(paradigm.upper().split("_")[0], [0])[0]
-            ],
+            channel_name = (
+                config.CHANNEL_DISPLAY_NAMES.get(_ep_key_s, {}).get(_ep_ch_s)
+                or config.CHANNEL_NAMES[_ep_ch_s]
+            ),
         )
         self._avg_panel.set_save_callback(self._on_save_png)
         self._avg_panel.set_export_callback(self._on_export_csv)
 
-        # Launch paradigm thread (requires PsychoPy)
-        if not psychopy_available():
-            QMessageBox.warning(
-                self,
-                "PsychoPy not installed",
-                "PsychoPy is required for stimulus delivery.\n"
-                "Run: pip install psychopy\n\n"
-                "EEG recording continues without stimuli.",
-            )
-            return
-
         self._paradigm = self._create_paradigm(paradigm, n_trials, stim_rate)
         if self._paradigm:
+            # Create stimulus widget on main thread, attach to paradigm before start()
+            self._stim_widget = StimulusWidget(screen_index=1)
+            self._paradigm.attach_widget(self._stim_widget)
             self._paradigm.marker_sent.connect(self._on_marker_sent)
             self._paradigm.trial_completed.connect(self._on_trial_completed)
             self._paradigm.paradigm_finished.connect(self._on_paradigm_finished)
@@ -347,6 +346,10 @@ class MainWindow(QMainWindow):
         if self._paradigm and self._paradigm.isRunning():
             self._paradigm.stop()
             self._paradigm.wait(3000)
+
+        if self._stim_widget is not None:
+            self._stim_widget.close()
+            self._stim_widget = None
 
         self._session_active = False
         self._paradigm = None
@@ -479,8 +482,8 @@ class MainWindow(QMainWindow):
             return
 
         paradigm = self._sidebar.get_paradigm_key()
-        ep_key   = paradigm.upper().split("_")[0]
-        ep_chs   = config.EP_CHANNELS.get(ep_key, [0])
+        ep_key   = config.PARADIGM_KEY_MAP.get(paradigm, paradigm.upper())
+        ep_chs   = config.EP_CHANNELS.get(ep_key) or config.EP_CHANNELS.get(ep_key.split("_")[0], [0])
         channel  = ep_chs[0] if ep_chs else 0
         target   = self._sidebar.get_target_epochs()
 
@@ -513,7 +516,8 @@ class MainWindow(QMainWindow):
         if avg is None:
             return
         paradigm = self._sidebar.get_paradigm_key()
-        ep_ch    = config.EP_CHANNELS.get(paradigm.upper().split("_")[0], [0])[0]
+        _ek      = config.PARADIGM_KEY_MAP.get(paradigm, paradigm.upper())
+        ep_ch    = (config.EP_CHANNELS.get(_ek) or config.EP_CHANNELS.get(_ek.split("_")[0], [0]))[0]
         components = self._detector.detect(avg, ep_ch, paradigm) if self._detector else []
         self._exporter._n_epochs = self._accepted_epochs
         try:
@@ -530,7 +534,8 @@ class MainWindow(QMainWindow):
         if avg is None:
             return
         paradigm = self._sidebar.get_paradigm_key()
-        ep_ch    = config.EP_CHANNELS.get(paradigm.upper().split("_")[0], [0])[0]
+        _ek      = config.PARADIGM_KEY_MAP.get(paradigm, paradigm.upper())
+        ep_ch    = (config.EP_CHANNELS.get(_ek) or config.EP_CHANNELS.get(_ek.split("_")[0], [0]))[0]
         components = self._detector.detect(avg, ep_ch, paradigm) if self._detector else []
         self._exporter._n_epochs = self._accepted_epochs
         try:
@@ -544,8 +549,8 @@ class MainWindow(QMainWindow):
         from neuroep.output.report import ReportData
         avg        = self._averager.current_avg if self._averager else None
         paradigm   = self._sidebar.get_paradigm_key()
-        ep_key     = paradigm.upper().split("_")[0]
-        ep_ch      = config.EP_CHANNELS.get(ep_key, [0])[0]
+        ep_key     = config.PARADIGM_KEY_MAP.get(paradigm, paradigm.upper())
+        ep_ch      = (config.EP_CHANNELS.get(ep_key) or config.EP_CHANNELS.get(ep_key.split("_")[0], [0]))[0]
         components = []
         if avg is not None and self._detector:
             components = self._detector.detect(avg, ep_ch, paradigm)
@@ -562,7 +567,10 @@ class MainWindow(QMainWindow):
             paradigm        = paradigm,
             avg             = avg,
             display_channel = ep_ch,
-            channel_name    = config.CHANNEL_NAMES[ep_ch],
+            channel_name    = (
+                config.CHANNEL_DISPLAY_NAMES.get(ep_key, {}).get(ep_ch)
+                or config.CHANNEL_NAMES[ep_ch]
+            ),
             components      = components,
             n_accepted      = self._accepted_epochs,
             n_rejected      = self._rejected_epochs,

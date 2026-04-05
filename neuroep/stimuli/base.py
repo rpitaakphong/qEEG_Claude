@@ -1,152 +1,132 @@
 """
-stimuli/base.py — PsychoPy window management and shared stimulus utilities.
+stimuli/base.py — Qt-native stimulus window and shared paradigm base.
 
-All paradigms inherit from ``BaseParadigm``, which owns the PsychoPy Window
-on screen 2, runs the trial loop in a background QThread, and communicates
-with the Qt main thread via signals.
+All paradigms inherit from BaseParadigm, which runs the trial loop in a
+background QThread and drives a StimulusWidget on the main thread via
+BlockingQueuedConnection signals.  No PsychoPy or OpenGL is required.
 
-Critical timing rule (enforced in every paradigm)
---------------------------------------------------
-    win.flip()                   # blocks until display refresh
-    T_onset = core.getTime()     # timestamp AFTER flip
-    board.insert_marker(code)    # marker inserted AFTER flip
-
-Never insert the marker before win.flip() — it would precede the actual
-stimulus onset by one full monitor refresh period (~16 ms at 60 Hz).
+Critical timing rule
+--------------------
+    t_onset = self._flip(draw_fn)     # blocks until main-thread repaint
+    self._send_marker(code, t_onset)  # marker AFTER flip
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+import time
+from typing import Callable, Optional
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QPainter
+from PyQt6.QtWidgets import QApplication, QWidget
 
 logger = logging.getLogger(__name__)
 
-def psychopy_available() -> bool:
-    """Return True if PsychoPy is importable (lightweight check, no side effects)."""
-    import importlib.util
-    return importlib.util.find_spec("psychopy") is not None
 
-
-def _init_psychopy_in_thread():
+class StimulusWidget(QWidget):
     """
-    Import pyglet and psychopy.visual INSIDE the worker thread.
+    Fullscreen stimulus display on the secondary monitor.
 
-    pyglet requires that EventLoop.run() is called on the same thread that
-    first imports pyglet.app.  Deferring all imports to the QThread's run()
-    call satisfies this constraint.  Returns (core, visual) or raises.
-    """
-    try:
-        import pyglet
-        pyglet.options["shadow_window"] = False
-        pyglet.options["debug_gl"] = False
-    except Exception:  # pylint: disable=broad-except
-        pass
-
-    from psychopy import core, visual  # noqa: PLC0415
-    return core, visual
-
-
-class StimulusWindow:
-    """
-    Thin wrapper around a PsychoPy ``visual.Window`` on screen index 1.
-
-    Opens fullscreen on the secondary monitor.  Call ``close()`` when done.
+    Lives on the main (GUI) thread.  The timing thread drives it exclusively
+    through ``flip()``, which is connected with BlockingQueuedConnection so
+    the caller blocks until the synchronous repaint completes.
 
     Parameters
     ----------
-    screen : int
-        Screen index (0 = primary, 1 = secondary stimulus monitor).
-    color : tuple[float, float, float]
-        Background colour in PsychoPy normalised units (−1 to +1).
+    screen_index : int
+        Qt screen index (0 = primary, 1 = secondary).  Falls back to
+        screen 0 if fewer screens are available.
     """
 
-    def __init__(
-        self,
-        screen: int = 1,
-        color:  tuple[float, float, float] = (-1.0, -1.0, -1.0),
-    ) -> None:
-        if not psychopy_available():
-            raise RuntimeError(
-                "PsychoPy is not installed. "
-                "Run: pip install psychopy"
-            )
-        # Import here (inside the QThread worker) so pyglet.app is imported on
-        # the same thread that will run its event loop — satisfying pyglet's
-        # threading constraint.
-        self._core, visual = _init_psychopy_in_thread()
-        self.win = visual.Window(
-            fullscr      = True,
-            screen       = screen,
-            color        = color,
-            colorSpace   = "rgb",
-            units        = "norm",
-            allowGUI     = False,
-            waitBlanking = True,
+    def __init__(self, screen_index: int = 1) -> None:
+        super().__init__()
+        self._draw_fn: Optional[Callable[[QPainter], None]] = None
+        self._last_flip_time: float = 0.0
+
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.clock = self._core.Clock()
+        self.setCursor(Qt.CursorShape.BlankCursor)
+
+        screens = QApplication.screens()
+        screen = screens[min(screen_index, len(screens) - 1)]
+        geo = screen.geometry()
+        self.setGeometry(geo)
+        self.showFullScreen()
+        if self.windowHandle():
+            self.windowHandle().setScreen(screen)
+            self.setGeometry(geo)
+
         logger.info(
-            "PsychoPy window opened on screen %d (%dx%d).",
-            screen,
-            self.win.size[0],
-            self.win.size[1],
+            "StimulusWidget opened on screen %d (%dx%d).",
+            screen_index,
+            geo.width(),
+            geo.height(),
         )
 
-    def flip(self) -> float:
-        """
-        Flip the back buffer and return the time (seconds) AFTER the flip.
+    # ── Paint ──────────────────────────────────────────────────────────────
 
-        This is the canonical stimulus onset timestamp — always use the
-        return value as T_onset.
-        """
-        self.win.flip()
-        return self._core.getTime()
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        if self._draw_fn is not None:
+            self._draw_fn(painter)
+        else:
+            painter.fillRect(self.rect(), Qt.GlobalColor.black)
+        painter.end()
 
-    def close(self) -> None:
-        """Close the PsychoPy window."""
-        try:
-            self.win.close()
-        except Exception:  # pylint: disable=broad-except
-            pass
-        logger.info("PsychoPy window closed.")
+    # ── Slot called on main thread via BlockingQueuedConnection ───────────
+
+    @pyqtSlot(object)
+    def flip(self, draw_fn: Optional[Callable]) -> None:
+        """
+        Set the draw function and repaint synchronously.
+
+        Called from the timing QThread via BlockingQueuedConnection — the
+        worker thread blocks here until this method returns.  ``repaint()``
+        forces an immediate synchronous paint before returning.
+        """
+        self._draw_fn = draw_fn
+        self.repaint()
+        self._last_flip_time = time.perf_counter()
 
 
 # ── Base paradigm QThread ──────────────────────────────────────────────────
+
 
 class BaseParadigm(QThread):
     """
     Abstract base class for all EP stimulus paradigms.
 
-    Runs the trial loop in a background QThread so the Qt GUI stays
-    responsive.  Subclasses must implement ``_run_trial_loop()``.
+    Runs the trial loop in a background QThread.  Visual output is driven
+    via ``_flip(draw_fn)`` which routes to ``StimulusWidget.flip`` on the
+    main thread through a BlockingQueuedConnection.
 
     Signals
     -------
-    marker_sent(int, float)
-        Emitted after each stimulus onset: (trigger_code, T_onset_seconds).
-    trial_completed(int)
-        Emitted after each trial: (trial_number, 1-based).
-    paradigm_finished()
-        Emitted when all trials are done or the paradigm is stopped.
-    error_occurred(str)
-        Emitted if an exception is raised inside the trial loop.
+    marker_sent(int, float)   : (trigger_code, T_onset_seconds)
+    trial_completed(int)      : (trial_number, 1-based)
+    paradigm_finished()       : all trials done or paradigm stopped
+    error_occurred(str)       : exception message from inside trial loop
     """
 
-    marker_sent      = pyqtSignal(int, float)    # (code, T_onset)
-    trial_completed  = pyqtSignal(int)           # (trial_number)
+    marker_sent       = pyqtSignal(int, float)
+    trial_completed   = pyqtSignal(int)
     paradigm_finished = pyqtSignal()
-    error_occurred   = pyqtSignal(str)
+    error_occurred    = pyqtSignal(str)
+
+    _flip_signal = pyqtSignal(object)   # internal: routed to widget.flip
 
     def __init__(
         self,
-        board_manager,                           # BoardManager (avoid circular import)
-        n_trials:    int   = 100,
-        stim_rate:   float = 2.0,               # Hz
-        screen:      int   = 1,
-        parent                  = None,
+        board_manager,
+        n_trials:  int   = 100,
+        stim_rate: float = 2.0,
+        screen:    int   = 1,
+        parent           = None,
     ) -> None:
         super().__init__(parent)
         self._board      = board_manager
@@ -154,27 +134,33 @@ class BaseParadigm(QThread):
         self._stim_rate  = stim_rate
         self._screen     = screen
         self._stop_event = threading.Event()
-        self._stim_win: Optional[StimulusWindow] = None
+        self._stim_widget: Optional[StimulusWidget] = None
+
+    # ── Widget attachment (call on main thread before start()) ─────────────
+
+    def attach_widget(self, widget: StimulusWidget) -> None:
+        """
+        Connect the flip signal to *widget*.
+
+        Must be called on the main thread before ``start()``.
+        BlockingQueuedConnection ensures ``_flip_signal.emit(fn)`` blocks
+        the worker thread until the main thread has finished repainting.
+        """
+        self._stim_widget = widget
+        self._flip_signal.connect(
+            widget.flip,
+            Qt.ConnectionType.BlockingQueuedConnection,
+        )
 
     # ── QThread entry point ────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Open the stimulus window, run trials, clean up."""
         try:
-            if not psychopy_available():
-                raise RuntimeError("PsychoPy is not installed.")
-
-            self._stim_win = StimulusWindow(screen=self._screen)
             self._run_trial_loop()
-
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("Paradigm error: %s", exc, exc_info=True)
             self.error_occurred.emit(str(exc))
-
         finally:
-            if self._stim_win is not None:
-                self._stim_win.close()
-                self._stim_win = None
             self.paradigm_finished.emit()
             logger.info("%s finished.", self.__class__.__name__)
 
@@ -185,27 +171,31 @@ class BaseParadigm(QThread):
     # ── To be overridden ───────────────────────────────────────────────────
 
     def _run_trial_loop(self) -> None:
-        """Override in subclass to implement the trial sequence."""
         raise NotImplementedError
 
     # ── Helpers available to subclasses ───────────────────────────────────
 
+    def _flip(self, draw_fn: Optional[Callable] = None) -> float:
+        """
+        Render a frame on the stimulus widget and return the flip timestamp.
+
+        Blocks the calling thread until the main-thread repaint completes.
+        ``draw_fn(painter: QPainter)`` is executed on the main thread.
+        Pass ``None`` to clear to black.
+
+        Returns
+        -------
+        float
+            ``time.perf_counter()`` recorded immediately after ``repaint()``
+            on the main thread — the canonical stimulus onset timestamp.
+        """
+        self._flip_signal.emit(draw_fn)
+        return self._stim_widget._last_flip_time
+
     def _inter_trial_interval(self) -> float:
-        """Return the inter-trial interval in seconds based on stim_rate."""
         return 1.0 / self._stim_rate
 
     def _send_marker(self, code: int, t_onset: float) -> None:
-        """
-        Insert marker into BrainFlow and emit the ``marker_sent`` signal.
-
-        Parameters
-        ----------
-        code : int
-            Trigger code (use ``TriggerCode`` enum).
-        t_onset : float
-            PsychoPy ``core.getTime()`` value recorded immediately after
-            ``win.flip()`` returned.
-        """
         self._board.insert_marker(code)
         self.marker_sent.emit(code, t_onset)
 
@@ -213,16 +203,11 @@ class BaseParadigm(QThread):
         """
         Sleep for *seconds* while honouring the stop event.
 
-        Returns
-        -------
-        bool
-            ``True`` if the wait completed normally, ``False`` if stop was
-            requested during the wait.
+        Returns ``True`` if the wait completed, ``False`` if stopped early.
         """
-        from psychopy import core as _core
-        deadline = _core.getTime() + seconds
-        while _core.getTime() < deadline:
+        deadline = time.perf_counter() + seconds
+        while time.perf_counter() < deadline:
             if self._stop_event.is_set():
                 return False
-            _core.wait(0.001)   # 1 ms polling
+            time.sleep(0.001)
         return True

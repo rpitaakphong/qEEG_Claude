@@ -1,7 +1,7 @@
 brainflow>=5.12.0
 PyQt6>=6.6.0
 pyqtgraph>=0.13.3
-psychopy>=2024.1.0
+sounddevice>=0.4.6
 scipy>=1.12.0
 numpy>=1.26.0
 mne>=1.6.0

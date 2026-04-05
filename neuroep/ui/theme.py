@@ -58,7 +58,7 @@ _FONT_STACK_QSS = (
     '"SF Pro Text", "SF Pro Display", "Helvetica Neue", '
     '"Segoe UI Variable", "Inter", "Segoe UI", Arial, sans-serif'
 )
-_BASE_FONT_SIZE = 11
+_BASE_FONT_SIZE = 12
 
 
 def _load_optional_fonts() -> None:
@@ -93,7 +93,7 @@ QWidget {{
     background-color: {bg_primary};
     color: {text_primary};
     font-family: {font_family};
-    font-size: 11pt;
+    font-size: 12pt;
 }}
 
 QMainWindow, QDialog {{
@@ -131,7 +131,7 @@ QPushButton {{
     border: 1px solid {border};
     border-radius: 4px;
     padding: 6px 14px;
-    font-size: 10pt;
+    font-size: 11pt;
 }}
 
 QPushButton:hover {{
@@ -153,7 +153,7 @@ QPushButton#btn_start {{
     background-color: {accent_purple};
     color: {text_primary};
     border: none;
-    font-size: 12pt;
+    font-size: 13pt;
     font-weight: bold;
     padding: 10px;
 }}
@@ -166,7 +166,7 @@ QPushButton#btn_stop {{
     background-color: {danger_red};
     color: {text_primary};
     border: none;
-    font-size: 12pt;
+    font-size: 13pt;
     font-weight: bold;
     padding: 10px;
 }}
@@ -175,7 +175,7 @@ QPushButton#btn_timing {{
     background-color: transparent;
     color: {accent_amber};
     border: 1px solid {accent_amber};
-    font-size: 10pt;
+    font-size: 11pt;
     padding: 6px 14px;
 }}
 
@@ -260,7 +260,7 @@ QLabel {{
 
 QLabel#label_secondary {{
     color: {text_secondary};
-    font-size: 9pt;
+    font-size: 10pt;
 }}
 
 QLabel#doc_badge {{
@@ -269,7 +269,7 @@ QLabel#doc_badge {{
     border-radius: 4px;
     padding: 2px 8px;
     font-weight: bold;
-    font-size: 9pt;
+    font-size: 10pt;
 }}
 
 /* ── Tab widget ─────────────────────────────────────────────────────── */
@@ -324,7 +324,7 @@ QStatusBar {{
     background-color: {bg_secondary};
     color: {text_secondary};
     border-top: 1px solid {border};
-    font-size: 9pt;
+    font-size: 10pt;
 }}
 
 /* ── Menu bar ────────────────────────────────────────────────────────── */
@@ -394,7 +394,7 @@ QWidget {{
     background-color: #f5f5f0;
     color: #1a1a1a;
     font-family: {font_family};
-    font-size: 11pt;
+    font-size: 12pt;
 }}
 
 QMainWindow, QDialog {{
@@ -442,7 +442,7 @@ QPushButton#btn_start {{
     background-color: #534AB7;
     color: #ffffff;
     border: none;
-    font-size: 12pt;
+    font-size: 13pt;
     font-weight: bold;
     padding: 10px;
 }}
@@ -451,7 +451,7 @@ QPushButton#btn_stop {{
     background-color: #D85A30;
     color: #ffffff;
     border: none;
-    font-size: 12pt;
+    font-size: 13pt;
     font-weight: bold;
     padding: 10px;
 }}
